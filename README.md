@@ -14,3 +14,14 @@ port conections.  At least it fills my needs.
 If it works for you thats nice.  its one source file it supports Linux,
 Probably not FreeBSD or Unix wiht out some tweaking.  No Autotools,
 no configure script.  Like I said, dirt simple.
+
+Documentation:
+Takes one or two arguments, a serial port device name (for /dev/ttyS0
+can be /dev/ttySO, or ttyS0 or S0, will try all three).  If no speed
+specified it will leav the speed unchanged (probably not very useful).
+Once connected commands a prefixed with Ctrl-A.  To send a Ctrl-A to
+the serial port type two in a row.  f (lowercase f) disables hardware
+flow control, F enables it.  T raises DTR, t drops it.  R raises RTS,
+r drops it (if flow control is disabled).  ? prints a help message. any
+of th efollowing close the port, restore the original state and exits:
+q, Q, x, X, Ctrl-Q, Ctr-X.  Thats pretty much it.
