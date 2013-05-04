@@ -22,7 +22,7 @@ char	buffer[256];
 
 char	*cmd;
 char	portname[24];
-int	speed;
+int	speed = -1;
 int	DTR = 1;
 int	RTS = 1;
 
@@ -319,7 +319,8 @@ int main(int argc, char *argv[])
 		speed = atoi(argv[2]);
 		if((baud = checkspeed(speed)) < 0)
 		{
-			fprintf(stderr, "%s invalid baud rate %d\n", cmd, baud);
+			fprintf(stderr, "%s unsupported baud rate %d\n", cmd,
+				speed);
 			clean_exit();
 		}
 	
@@ -332,6 +333,8 @@ int main(int argc, char *argv[])
 	tcsetattr(1, TCSANOW, &stdoutnew);
 	ioctl(fd, TIOCMBIC, TIOCM_RTS|TIOCM_DTR);
 		
+	fprintf(stdout, "Connected %s@%d Ctrl-A? for help Ctrl-Aq to quit\n\r",
+		portname, speed);
 	for(;;)
 	{
 		settitle();
@@ -499,19 +502,19 @@ int main(int argc, char *argv[])
 					i++;
 					break;
 				case '?':
-					fprintf(stdout,
-						"\n\r*********************\n\r"
-						"\n\r* ? - Print this    *\n\r"
-						"\n\r*two ctrl-As, sens 1*\n\r"
-						"\n\r* f - flow ctrl off *\n\r"
-						"\n\r* F - flow ctrl on  *\n\r"
-						"\n\r* t - drop DTR      *\n\r"
-						"\n\r* T - raise DTR     *\n\r"
-						"\n\r* r - drop RTS      *\n\r"
-						"\n\r* R - raise RTS     *\n\r"
-						"\n\r* Any of qQxX - Exit*\n\r"
-						"\n\r* Also Ctrl-Q,Ctrl-X*\n\r"
-						"\n\r*********************\n\r"
+					fprintf(stdout, "\n\r"
+						"*************************\n\r"
+						"* ? - Print this        *\n\r"
+						"* two ctrl-As, sends 1  *\n\r"
+						"* f - flow ctrl off     *\n\r"
+						"* F - flow ctrl on      *\n\r"
+						"* t - drop DTR          *\n\r"
+						"* T - raise DTR         *\n\r"
+						"* r - drop RTS          *\n\r"
+						"* R - raise RTS         *\n\r"
+						"* Any of qQxX - Exit    *\n\r"
+						"* Also Ctrl-Q,Ctrl-X    *\n\r"
+						"*************************\n\r"
 					);
 					fflush(stdout);
 				default:
