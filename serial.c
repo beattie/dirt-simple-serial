@@ -7,18 +7,41 @@
 #include <string.h>
 #include <stdio.h>
 #include <termios.h>
+#include <time.h>
+#include <sys/select.h>
+#include <sys/types.h>
 #include <sys/ioctl.h>
 
 #define	CTRL_A	'\001'
 #define CTRL_Q	'\021'
 #define CTRL_X	'\030'
+#define CTRL_Z	'\032'
+
+#define LOGOFF		'l'
+#define LOGON		'L'
+#define	DROPDTR		't'
+#define RAISEDTR	'T'
+#define DROPRTS		'r'
+#define RAISERTS	'R'
+#define FLOWOFF		'f'
+#define FLOWON		'F'
+#define QUIT1		'q'
+#define QUIT2		'Q'
+#define QUIT3		CTRL_Q
+#define QUIT4		'x'
+#define QUIT5		'X'
+#define QUIT6		CTRL_X
+#define QUERY		'?'
+
+char	cmd_esc = CTRL_Z;
 
 struct termios	serold, sernew;
 struct termios	stdinold, stdinnew;
 struct termios	stdoutold, stdoutnew;
 
-int	fd = -1;
-char	buffer[256];
+int	fd = -1, logfd = -1, exiting = 0, flowcontrol;
+char	buffer[2048];
+char	escapemsg[64];
 
 char	*cmd;
 char	portname[24];
@@ -283,15 +306,178 @@ int openport(char *str)
 	return -1;
 }
 
+int do_command(char c)
+{
+	int		i, mdmsig = 0;
+	static char	*logname, template[]="/tmp/serial.XXXXXX.log";
+
+	switch(c)
+	{
+	case LOGOFF:
+		if(logfd >= 0)
+		{
+			fprintf(stdout, "\n\r closing logfile: %s\n\r",
+				logname);
+			close(logfd);
+			logfd = -1;
+		}
+		i = 1;
+		break;
+	case LOGON:
+		if(logfd >= 0)	/* switch logfiles */
+		{
+			fprintf(stdout,
+				"\n\r switching logfiles closing %s\n\r",
+				logname);
+			close(logfd);
+			logfd = -1;
+		}
+		logname = malloc(strlen(template) + 1);
+		strcpy(logname, template);
+		if((logfd = mkostemps(logname, 4, O_WRONLY | O_APPEND |
+					O_CREAT | O_EXCL)) < 0)
+		{
+			fprintf(stdout,
+				"\n\rLogging: failed to open logfile\n\r");
+		} else {
+			fprintf(stdout, "\n\rLogging to:%s\n\r", logname);
+			fchmod(logfd, 0644);
+		}
+		i = 1;
+		break;
+	case DROPDTR:
+		/* drop DTR */
+		DTR = 0;
+		mdmsig = TIOCM_DTR;
+		ioctl(fd, TIOCMBIC, mdmsig);
+		strcpy(escapemsg, "\n\rt drop DTR\n\r");
+		i = 1;
+	case RAISEDTR:
+		/* raise DTR */
+		DTR = 1;
+		mdmsig = TIOCM_DTR;
+		ioctl(fd, TIOCMBIS, mdmsig);
+		strcpy(escapemsg, "\n\rt drop DTR\n\r");
+		i = 1;
+	case DROPRTS:
+		if(!flowcontrol)
+		{
+			strcpy(escapemsg, "\n\rr drop RTS/RTS "
+				"blocked by flow control\n\r");
+		} else {
+			mdmsig = TIOCM_RTS;
+			ioctl(fd, TIOCMBIC, mdmsig);
+			strcpy(escapemsg,
+				"\n\rt drop RTS/RTR\n\r");
+		}
+		i = 1;
+		break;
+	case RAISERTS:
+		if(!flowcontrol)
+		{
+			strcpy(escapemsg, "\n\rr raise RTS/RTR "
+				"blocked by flow control\n\r");
+		} else {
+			mdmsig = TIOCM_RTS;
+			ioctl(fd, TIOCMBIC, mdmsig);
+			strcpy(escapemsg,
+				"\n\rt drop RTS/RTR\n\r");
+		}
+		i = 1;
+		break;
+	case FLOWOFF:
+		/* disable hardware flow control */
+		sernew.c_cflag &= ~CRTSCTS;
+		tcsetattr(0, TCSANOW, &sernew);
+		strcpy(escapemsg, "\n\rf disable flow "
+			"control\n\r");
+		flowcontrol = 0;
+		i = 1;
+		break;
+	case FLOWON:
+		/* enable hardware flow control */
+		sernew.c_cflag |= CRTSCTS;
+		tcsetattr(0, TCSANOW, &sernew);
+		strcpy(escapemsg, "\n\rf disable flow "
+			"control\n\r");
+		flowcontrol = 0;
+		i = 1;
+		break;
+	case QUIT1:
+	case QUIT2:
+	case QUIT3:
+	case QUIT4:
+	case QUIT5:
+	case QUIT6:
+		exiting = 1;
+		strcpy(escapemsg, "\n\rGoodbye\n\r");
+		clean_exit();
+		i = 1;
+		break;
+	case QUERY:
+		fprintf(stdout, "\n\r"
+			"******************************\n\r"
+			"* ? - Print this             *\n\r"
+			"* two ctrl-Zs, sends 1       *\n\r"
+			"* l - disable logging        *\n\r"
+			"* L - enable logging (makes  *\n\r"
+			"*     temporary file in /tmp *\n\r"
+			"* f - flow ctrl off          *\n\r"
+			"* F - flow ctrl on           *\n\r"
+			"* t - drop DTR               *\n\r"
+			"* T - raise DTR              *\n\r"
+			"* r - drop RTS               *\n\r"
+			"* R - raise RTS              *\n\r"
+			"* Any of qQxX - Exit         *\n\r"
+			"* Also Ctrl-Q,Ctrl-X         *\n\r"
+			"******************************\n\r"
+		);
+		i = 1;
+		break;
+	default:
+		i = 0;
+		break;
+	}
+	return i;
+}
 int main(int argc, char *argv[])
 {
-	int	i, n, m, escape = 0, baud, mdmsig, exiting = 0;
-	char	escapemsg[64];
+	int		i, n, m, baud;
+	char		*p, cmdchr = '\0', *cmdstart;
+	fd_set		read_fds, write_fds, except_fds;
+	struct timeval	tv;
 
 	cmd = argv[0];
 	if(argc < 2)
 	{
-		fprintf(stderr, "Usage: %s <tty>\n", argv[0]);
+		fprintf(stderr,
+		"This program (dirt-simple-serial) or just serial is a\n"
+		"serial port program, that is to say it is a program that\n"
+		"is designed to connect to a serial port on a Linux\n"
+		"computer that is connected to some external device such\n"
+		"as a development board.  It allows the user to type\n"
+		"commands to the development board.  To interface with the\n"
+		"boot loader or to log into the console.  I can also be used\n"
+		"to connect to a number of devices such as GPS modules that\n"
+		"provide serial interfaces.\n\n"
+		"the primary design goals were to be a simple as possible.\n"
+		"To provide as unimpeded access to the serial device d to\n"
+		"avoid unecessary features.  For instance with gnome-terminal\n"
+		"or xterm process of displaying characters, providing support\n"
+		"for editors such as emacs or vim are well handled by the\n"
+		"terminal program.  While logging could have been done with\n"
+		"the screen program I did add support for logging since\n"
+		"turning screen on an off is not convienient. Finally,\n"
+		"instead of providing a status line I ave hijacked the\n"
+		"title feature of gnome-terminal/xterm to display that\n"
+		"information.  The one feature that I may add is the ability\n"
+		"run external programs with the serial port so file transfer\n"
+		"programs can be run\n"
+		"to exit the program enter the character sequence CTRL-Zq\n"
+		"Q,CTRL-Q,x,X and CTRL-X will also work in the place of q.\n"
+		"Enter the sequence CTRL-Z? to get a list of commands\n\n");
+		fprintf(stderr, "Usage: %s <tty> [speed]\n", argv[0]);
+		exit(0);
 	}
 	signal(SIGTERM, signal_exit);
 	signal(SIGHUP, signal_exit);
@@ -333,217 +519,159 @@ int main(int argc, char *argv[])
 	tcsetattr(1, TCSANOW, &stdoutnew);
 	ioctl(fd, TIOCMBIC, TIOCM_RTS|TIOCM_DTR);
 		
-	fprintf(stdout, "Connected %s@%d Ctrl-A? for help Ctrl-Aq to quit\n\r",
+	fprintf(stdout, "Connected %s@%d Ctrl-Z? for help Ctrl-Zq to quit\n\r",
 		portname, speed);
 	for(;;)
 	{
 		settitle();
-		if((n = read(fd, buffer, sizeof(buffer))) < 0)
+		FD_ZERO(&read_fds);
+		FD_ZERO(&write_fds);
+		FD_ZERO(&except_fds);
+		FD_SET(0, &read_fds);
+		FD_SET(0, &except_fds);
+		FD_SET(1, &write_fds);
+		FD_SET(1, &except_fds);
+		FD_SET(fd, &read_fds);
+		FD_SET(fd, &write_fds);
+		FD_SET(fd, &except_fds);
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+		/*
+		 * no time out  the three file descriptors are 0, 1 and
+		 * fd can't be lower than 0 and 1, therefore it's the
+		 * higest.
+		 */
+		if(select(fd + 1, &read_fds, NULL, &except_fds, &tv) < 0)
 		{
-			if(errno != EAGAIN)
+			clean_exit();
+		}
+		/* process serial port to display */
+		if(FD_ISSET(fd, &read_fds))
+		{
+			if((n = read(fd, buffer, sizeof(buffer))) > 0)
 			{
-				fprintf(stderr,
-					"%s serial port read %d error (%s)\n",
-					cmd, errno, strerror(errno));
+				if(write(1, buffer, n) != n)
+				{
+					clean_exit();
+				}
+			} else {
 				clean_exit();
 			}
 		}
-		if(n > 0)
+		/*
+		 * process keyboard (or pipe?) to serial port detect
+		 * and process commands
+		 */
+		if(FD_ISSET(0, &read_fds) == 0)
 		{
-			if(write(1, buffer, n) < n)
-			{
-				fprintf(stderr, "%s stdout write error "
-					"(%s)\n", cmd, strerror(errno));
-				clean_exit();
-			}
+			continue;
 		}
 		if((n = read(0, buffer, sizeof(buffer))) < 0)
 		{
-			fprintf(stderr, "%s stdin read error (%s)\n",
-				cmd, strerror(errno));
 			clean_exit();
 		}
-		for(i = 0; i < n; i++)
+		if(!cmdchr)	/* not currently processing a command */
 		{
-			/* look for escape char */
-			if(! escape )
-			{
-				if((buffer[i]&127) == CTRL_A)
+			/* scan buffer for command */
+			if((p = memchr(buffer, cmd_esc, n)) == NULL)
+			{	/* no command */
+				if(write(fd, buffer, n) != n)
 				{
-					escape = 1;
-					if(i > 0)
-					{
-						/*
-					 	* write out what was before the
-					 	* escape char
-					 	*/
-						if(write(fd, buffer, i) != i)
-						{
-							fprintf(stderr,
-								"%s serial port"
-								" write error "
-								"(%s)\n", cmd,
-								strerror(
-									errno));
-							clean_exit();
-						}
-					}
-					i++;
-					/*
-				 	* subtract what has already
-				 	* been sent and the escape
-				 	* char.
-				 	*/
-					n -= i;
+					clean_exit();
 				}
+				continue;
 			}
-			if(!n)
-			{
-				break;
-			}
-			if(escape)
-			{
-				switch (buffer[i]&127)
+			cmdchr = *p;
+			cmdstart = p++;
+			if((cmdstart - buffer) <= 0)
+			{	/* end of buffer, we need more input */
+				/* write the buffer minus the command */
+				if(cmdstart > 0)
 				{
-				case CTRL_A:
-					escape = 0;
-					memset(escapemsg, 0, sizeof escapemsg);
-					i++;
-					break;
-				case 'f':
-					/* disable hardware flow control */
-					sernew.c_cflag &= ~CRTSCTS;
-					tcsetattr(0, TCSANOW, &sernew);
-					strcpy(escapemsg,
-						"\n\rf disable flow "
-						"control\n\r");
-					n--;
-					i++;
-					break;
-				case 'F':
-					/* enable hardware flow control */
-					sernew.c_cflag |= CRTSCTS;
-					tcsetattr(0, TCSANOW, &sernew);
-					strcpy(escapemsg,
-						"\n\rF enable flow "
-						"control\n\r");
-					n--;
-					i++;
-					break;
-				case 't':
-					/* drop DTR */
-					DTR = 0;
-					mdmsig = TIOCM_DTR;
-					ioctl(fd, TIOCMBIC, mdmsig);
-					strcpy(escapemsg,
-						"\n\rt drop DTR\n\r");
-					n--;
-					i++;
-					break;
-				case 'T':
-					/* raise DTR */
-					DTR = 1;
-					mdmsig = TIOCM_DTR;
-					ioctl(fd, TIOCMBIS, mdmsig);
-					strcpy(escapemsg,
-						"\n\rT raise DTR\n\r");
-					n--;
-					i++;
-					break;
-				case 'r':
-					/* drop RTS/RTR */
-					RTS = 0;
-					if(sernew.c_cflag & CRTSCTS)
+					if(write(fd, buffer, n - 1) != (n - 1))
 					{
-						strcpy(escapemsg,
-							"\n\rr drop RTS/RTS "
-							"blocked by flow "
-							"control\n\r");
-						n--;
-						i++;
-						break;
+						clean_exit();
 					}
-					mdmsig = TIOCM_RTS;
-					ioctl(fd, TIOCMBIC, mdmsig);
-					strcpy(escapemsg,
-						"\n\rt drop RTS/RTR\n\r");
-					n--;
-					i++;
-					break;
-				case 'R':
-					/* raise RTS/RTR */
-					RTS = 1;
-					if(sernew.c_cflag & CRTSCTS)
-					{
-						strcpy(escapemsg,
-							"\n\rr raise RTS/RTS "
-							"blocked by flow "
-							"control\n\r");
-						n--;
-						i++;
-						break;
-					}
-					mdmsig = TIOCM_RTS;
-					ioctl(fd, TIOCMBIS, mdmsig);
-					strcpy(escapemsg,
-						"\n\rt raise RTS/RTR\n\r");
-					n--;
-					i++;
-					break;
-				case 'q':
-				case 'Q':
-				case 'x':
-				case 'X':
-				case CTRL_Q:
-				case CTRL_X:
-					exiting = 1;
-					strcpy(escapemsg, "\n\rExit\n\r");
-					n--;
-					i++;
-					break;
-				case '?':
-					fprintf(stdout, "\n\r"
-						"*************************\n\r"
-						"* ? - Print this        *\n\r"
-						"* two ctrl-As, sends 1  *\n\r"
-						"* f - flow ctrl off     *\n\r"
-						"* F - flow ctrl on      *\n\r"
-						"* t - drop DTR          *\n\r"
-						"* T - raise DTR         *\n\r"
-						"* r - drop RTS          *\n\r"
-						"* R - raise RTS         *\n\r"
-						"* Any of qQxX - Exit    *\n\r"
-						"* Also Ctrl-Q,Ctrl-X    *\n\r"
-						"*************************\n\r"
-					);
-					fflush(stdout);
-				default:
-					*escapemsg = '\0';
-					break;
 				}
-				escape = 0;
-				if(m = strlen(escapemsg))
-				{
-					write(1,escapemsg, m);
-				}
-
+				continue;
 			}
-		}
-		if(n)
-		{
-			if(write(fd, buffer, n) < n)
+			m = -1;
+			if(*p != cmd_esc)
 			{
-				fprintf(stderr, "%s serial port write "
-					"error (%s)\n", cmd,
-					strerror(errno));
+				m = do_command(*p);
+				if(m)
+				{
+					i = (cmdstart - buffer) + m;
+					n -= i;	/* # bytes following cmd */
+				}
+			} else {	/* two cmd esc's sends one */
+				i = cmdstart - buffer;
+				n -= i;	/* number of bytes following cmd esc */
+			}
+			if(m == 0)
+			{ /* no command  write whole buffer */
+				if(write(fd, buffer, n) != n)
+				{
+					clean_exit();
+				}
+				cmdchr = '\0';
+				continue;
+			}
+			/* write the dataq up to the command esc */
+			if(write(fd, buffer, cmdstart - buffer) !=
+				(cmdstart - buffer))
+			{
 				clean_exit();
 			}
-		}
-		if(exiting > 0)
-		{
-			fprintf(stdout, "\n\r%s Goodbye\n\r", cmd);
-			clean_exit();
+			if(n > 0)
+			{
+				if(write(fd, p, n) != n)
+				{
+					clean_exit();
+				}
+			}
+			cmdchr = '\0';
+			continue;
+		} else {	/* currently processing a comand */
+				/* we have the command escape */
+			fprintf(stderr, "\n\r currently processing "
+				"command\n\r");
+			if(buffer[0] == cmd_esc)
+			{
+				/* 
+				 * a second cmd esc, drop the first one
+				 * send the rest
+				 */
+				if(write(fd, buffer, n) != n)
+				{
+					clean_exit();
+				}
+				cmdchr = '\0';
+				continue;
+			}
+			m = do_command(buffer[0]);
+			if(m = 0)
+			{	/*
+				 * no command, send the cmd escape and the
+				 * whole buffer.
+				 */
+				if((write(fd, &cmdchr, 1) != 1) || (write(fd,
+						buffer, n) != n))
+				{
+					clean_exit();
+				}
+			} else {
+				/*
+				 * we had a command, drop the command escape
+				 * skip the command char
+				 */
+				if(write(fd, buffer + m, n - m) != (n - m))
+				{
+					clean_exit();
+				}
+			}
+			cmdchr = '\0';
+			continue;
 		}
 	}
 }
-
