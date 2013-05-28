@@ -15,8 +15,9 @@
 #define	CTRL_A	'\001'
 #define CTRL_Q	'\021'
 #define CTRL_X	'\030'
-#define CTRL_Z	'\032'
+#define CTRL_G	'\027'
 
+#define SETCMD		'c'
 #define LOGOFF		'l'
 #define LOGON		'L'
 #define	DROPDTR		't'
@@ -33,7 +34,7 @@
 #define QUIT6		CTRL_X
 #define QUERY		'?'
 
-char	cmd_esc = CTRL_Z;
+char	cmd_esc = CTRL_G;
 
 struct termios	serold, sernew;
 struct termios	stdinold, stdinnew;
@@ -306,13 +307,27 @@ int openport(char *str)
 	return -1;
 }
 
-int do_command(char c)
+int do_command(char **p, int *n)
 {
 	int		i, mdmsig = 0;
 	static char	*logname, template[]="/tmp/serial.XXXXXX.log";
 
-	switch(c)
+	switch(**p)
 	{
+	case SETCMD:
+		if(*n > 0)
+		{
+			cmd_esc = **p; 
+			*p++;
+			*n--;
+		} else {
+			if(read(fd, &cmd_esc, 1) != 1)
+			{
+				clean_exit();
+			}
+		}
+		i = 1;
+		break;
 	case LOGOFF:
 		if(logfd >= 0)
 		{
@@ -418,7 +433,8 @@ int do_command(char c)
 		fprintf(stdout, "\n\r"
 			"******************************\n\r"
 			"* ? - Print this             *\n\r"
-			"* two ctrl-Zs, sends 1       *\n\r"
+			"* two cmd escapes, sends 1   *\n\r"
+			"* c - set cmd esc char       *\n\r"
 			"* l - disable logging        *\n\r"
 			"* L - enable logging (makes  *\n\r"
 			"*     temporary file in /tmp *\n\r"
@@ -473,9 +489,9 @@ int main(int argc, char *argv[])
 		"information.  The one feature that I may add is the ability\n"
 		"run external programs with the serial port so file transfer\n"
 		"programs can be run\n"
-		"to exit the program enter the character sequence CTRL-Zq\n"
+		"to exit the program enter the character sequence CTRL-Gq\n"
 		"Q,CTRL-Q,x,X and CTRL-X will also work in the place of q.\n"
-		"Enter the sequence CTRL-Z? to get a list of commands\n\n");
+		"Enter the sequence CTRL-G? to get a list of commands\n\n");
 		fprintf(stderr, "Usage: %s <tty> [speed]\n", argv[0]);
 		exit(0);
 	}
@@ -519,7 +535,7 @@ int main(int argc, char *argv[])
 	tcsetattr(1, TCSANOW, &stdoutnew);
 	ioctl(fd, TIOCMBIC, TIOCM_RTS|TIOCM_DTR);
 		
-	fprintf(stdout, "Connected %s@%d Ctrl-Z? for help Ctrl-Zq to quit\n\r",
+	fprintf(stdout, "Connected %s@%d Ctrl-G? for help Ctrl-Gq to quit\n\r",
 		portname, speed);
 	for(;;)
 	{
@@ -598,17 +614,17 @@ int main(int argc, char *argv[])
 			m = -1;
 			if(*p != cmd_esc)
 			{
-				m = do_command(*p);
 				if(m)
 				{
 					i = (cmdstart - buffer) + m;
 					n -= i;	/* # bytes following cmd */
 				}
+				m = do_command(&p, &n);
 			} else {	/* two cmd esc's sends one */
 				i = cmdstart - buffer;
 				n -= i;	/* number of bytes following cmd esc */
 			}
-			if(m == 0)
+			if(m == 0 && n > 0)
 			{ /* no command  write whole buffer */
 				if(write(fd, buffer, n) != n)
 				{
@@ -649,14 +665,15 @@ int main(int argc, char *argv[])
 				cmdchr = '\0';
 				continue;
 			}
-			m = do_command(buffer[0]);
-			if(m = 0)
+			p = buffer;
+			m = do_command(&p, &n);
+			if(m = 0 && n < 0)
 			{	/*
 				 * no command, send the cmd escape and the
 				 * whole buffer.
 				 */
 				if((write(fd, &cmdchr, 1) != 1) || (write(fd,
-						buffer, n) != n))
+						p, n) != n))
 				{
 					clean_exit();
 				}
