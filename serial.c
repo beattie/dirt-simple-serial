@@ -50,7 +50,7 @@ int	speed = -1;
 int	DTR = 1;
 int	RTS = 1;
 
-void clean_exit(void)
+void clean_exit(int reason)
 {
 	tcsetattr(0, TCSANOW, &stdinold);
 	tcsetattr(0, TCSANOW, &stdoutold);
@@ -59,7 +59,7 @@ void clean_exit(void)
 		exit(-1);
 	}
 	tcsetattr(fd, TCSAFLUSH, &serold);
-	exit(-1);
+	exit(reason);
 }
 
 /*
@@ -143,7 +143,7 @@ void settitle(void)
 void signal_exit(int sig)
 {
 	fprintf(stderr, "%s exited on signal %d\n", cmd, sig);
-	clean_exit();
+	clean_exit(-1);
 }
 
 setattr(struct termios *t)
@@ -323,7 +323,7 @@ int do_command(char **p, int *n)
 		} else {
 			if(read(fd, &cmd_esc, 1) != 1)
 			{
-				clean_exit();
+				clean_exit(-1);
 			}
 		}
 		i = 1;
@@ -426,7 +426,7 @@ int do_command(char **p, int *n)
 	case QUIT6:
 		exiting = 1;
 		strcpy(escapemsg, "\n\rGoodbye\n\r");
-		clean_exit();
+		clean_exit(-1);
 		i = 1;
 		break;
 	case QUERY:
@@ -501,7 +501,7 @@ int main(int argc, char *argv[])
 
 	if((fd = openport(argv[1])) < 0)
 	{
-		exit -1;
+		exit(-1);
 	}
 
 	tcgetattr(fd, &serold);
@@ -523,7 +523,7 @@ int main(int argc, char *argv[])
 		{
 			fprintf(stderr, "%s unsupported baud rate %d\n", cmd,
 				speed);
-			clean_exit();
+			clean_exit(-1);
 		}
 	
 		cfsetispeed(&sernew, baud);
@@ -559,7 +559,7 @@ int main(int argc, char *argv[])
 		 */
 		if(select(fd + 1, &read_fds, NULL, &except_fds, &tv) < 0)
 		{
-			clean_exit();
+			clean_exit(-1);
 		}
 		/* process serial port to display */
 		if(FD_ISSET(fd, &read_fds))
@@ -568,10 +568,10 @@ int main(int argc, char *argv[])
 			{
 				if(write(1, buffer, n) != n)
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 			} else {
-				clean_exit();
+				clean_exit(-1);
 			}
 		}
 		/*
@@ -584,7 +584,7 @@ int main(int argc, char *argv[])
 		}
 		if((n = read(0, buffer, sizeof(buffer))) < 0)
 		{
-			clean_exit();
+			clean_exit(-1);
 		}
 		if(!cmdchr)	/* not currently processing a command */
 		{
@@ -593,7 +593,7 @@ int main(int argc, char *argv[])
 			{	/* no command */
 				if(write(fd, buffer, n) != n)
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 				continue;
 			}
@@ -606,7 +606,7 @@ int main(int argc, char *argv[])
 				{
 					if(write(fd, buffer, n - 1) != (n - 1))
 					{
-						clean_exit();
+						clean_exit(-1);
 					}
 				}
 				continue;
@@ -628,7 +628,7 @@ int main(int argc, char *argv[])
 			{ /* no command  write whole buffer */
 				if(write(fd, buffer, n) != n)
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 				cmdchr = '\0';
 				continue;
@@ -637,13 +637,13 @@ int main(int argc, char *argv[])
 			if(write(fd, buffer, cmdstart - buffer) !=
 				(cmdstart - buffer))
 			{
-				clean_exit();
+				clean_exit(-1);
 			}
 			if(n > 0)
 			{
 				if(write(fd, p, n) != n)
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 			}
 			cmdchr = '\0';
@@ -660,7 +660,7 @@ int main(int argc, char *argv[])
 				 */
 				if(write(fd, buffer, n) != n)
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 				cmdchr = '\0';
 				continue;
@@ -675,7 +675,7 @@ int main(int argc, char *argv[])
 				if((write(fd, &cmdchr, 1) != 1) || (write(fd,
 						p, n) != n))
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 			} else {
 				/*
@@ -684,7 +684,7 @@ int main(int argc, char *argv[])
 				 */
 				if(write(fd, buffer + m, n - m) != (n - m))
 				{
-					clean_exit();
+					clean_exit(-1);
 				}
 			}
 			cmdchr = '\0';
