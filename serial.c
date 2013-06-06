@@ -312,12 +312,12 @@ int do_command(char **p, int *n)
 	int		i, mdmsig = 0;
 	static char	*logname, template[]="/tmp/serial.XXXXXX.log";
 
-	switch(**p)
+	switch(**p&127)
 	{
 	case SETCMD:
 		if(*n > 0)
 		{
-			cmd_strt = **p; 
+			cmd_strt = **p&127; 
 			*p++;
 			*n--;
 		} else {
@@ -325,6 +325,7 @@ int do_command(char **p, int *n)
 			{
 				clean_exit(-1);
 			}
+			cmd_strt &= 127;
 		}
 		i = 1;
 		break;
@@ -589,7 +590,15 @@ int main(int argc, char *argv[])
 		if(!cmdchr)	/* not currently processing a command */
 		{
 			/* scan buffer for command */
-			if((p = memchr(buffer, cmd_strt, n)) == NULL)
+			for(i = 0, p = NULL;i < n; i++)
+			{
+				if((buffer[i]&127) == cmd_strt)
+				{
+					p = buffer + i;
+					break;
+				}
+			}
+			if(p == NULL)
 			{	/* no command */
 				if(write(fd, buffer, n) != n)
 				{
@@ -612,7 +621,7 @@ int main(int argc, char *argv[])
 				continue;
 			}
 			m = -1;
-			if(*p != cmd_strt)
+			if((*p&127) != cmd_strt)
 			{
 				if(m)
 				{
@@ -652,7 +661,7 @@ int main(int argc, char *argv[])
 				/* we have the command escape */
 			fprintf(stderr, "\n\r currently processing "
 				"command\n\r");
-			if(buffer[0] == cmd_strt)
+			if((buffer[0]&127) == cmd_strt)
 			{
 				/* 
 				 * a second cmd esc, drop the first one
