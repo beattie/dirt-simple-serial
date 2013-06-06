@@ -15,7 +15,7 @@
 #define	CTRL_A	'\001'
 #define CTRL_Q	'\021'
 #define CTRL_X	'\030'
-#define CTRL_G	'\027'
+#define CTRL_G	'\007'
 
 #define SETCMD		'c'
 #define LOGOFF		'l'
@@ -659,8 +659,6 @@ int main(int argc, char *argv[])
 			continue;
 		} else {	/* currently processing a comand */
 				/* we have the command escape */
-			fprintf(stderr, "\n\r currently processing "
-				"command\n\r");
 			if((buffer[0]&127) == cmd_strt)
 			{
 				/* 
