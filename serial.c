@@ -34,7 +34,7 @@
 #define QUIT6		CTRL_X
 #define QUERY		'?'
 
-char	cmd_esc = CTRL_G;
+char	cmd_strt = CTRL_G;
 
 struct termios	serold, sernew;
 struct termios	stdinold, stdinnew;
@@ -317,11 +317,11 @@ int do_command(char **p, int *n)
 	case SETCMD:
 		if(*n > 0)
 		{
-			cmd_esc = **p; 
+			cmd_strt = **p; 
 			*p++;
 			*n--;
 		} else {
-			if(read(fd, &cmd_esc, 1) != 1)
+			if(read(fd, &cmd_strt, 1) != 1)
 			{
 				clean_exit(-1);
 			}
@@ -589,7 +589,7 @@ int main(int argc, char *argv[])
 		if(!cmdchr)	/* not currently processing a command */
 		{
 			/* scan buffer for command */
-			if((p = memchr(buffer, cmd_esc, n)) == NULL)
+			if((p = memchr(buffer, cmd_strt, n)) == NULL)
 			{	/* no command */
 				if(write(fd, buffer, n) != n)
 				{
@@ -612,7 +612,7 @@ int main(int argc, char *argv[])
 				continue;
 			}
 			m = -1;
-			if(*p != cmd_esc)
+			if(*p != cmd_strt)
 			{
 				if(m)
 				{
@@ -652,7 +652,7 @@ int main(int argc, char *argv[])
 				/* we have the command escape */
 			fprintf(stderr, "\n\r currently processing "
 				"command\n\r");
-			if(buffer[0] == cmd_esc)
+			if(buffer[0] == cmd_strt)
 			{
 				/* 
 				 * a second cmd esc, drop the first one
