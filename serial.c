@@ -34,7 +34,7 @@
 #define QUIT6		CTRL_X
 #define QUERY		'?'
 
-char	cmd_strt = CTRL_G;
+char	cmd_start_chr = CTRL_G;
 
 struct termios	serold, sernew;
 struct termios	stdinold, stdinnew;
@@ -307,6 +307,18 @@ int openport(char *str)
 	return -1;
 }
 
+void do_write(int fd, char *b, int n)
+{
+	if(logfd >= 0)
+	{
+		write(logfd, b, n);
+	}
+	if(write(fd, b, n) != n)
+	{
+		clean_exit(-1);
+	}
+}
+
 int do_command(char **p, int *n)
 {
 	int		i, mdmsig = 0;
@@ -317,17 +329,18 @@ int do_command(char **p, int *n)
 	case SETCMD:
 		if(*n > 0)
 		{
-			cmd_strt = **p&127; 
+			cmd_start_chr = **p&127; 
 			*p++;
 			*n--;
 		} else {
-			if(read(fd, &cmd_strt, 1) != 1)
+			if(read(fd, &cmd_start_chr, 1) != 1)
 			{
 				clean_exit(-1);
 			}
-			cmd_strt &= 127;
+			cmd_start_chr &= 127;
 		}
 		i = 1;
+		*p++;
 		break;
 	case LOGOFF:
 		if(logfd >= 0)
@@ -338,6 +351,7 @@ int do_command(char **p, int *n)
 			logfd = -1;
 		}
 		i = 1;
+		*p++;
 		break;
 	case LOGON:
 		if(logfd >= 0)	/* switch logfiles */
@@ -360,6 +374,7 @@ int do_command(char **p, int *n)
 			fchmod(logfd, 0644);
 		}
 		i = 1;
+		*p++;
 		break;
 	case DROPDTR:
 		/* drop DTR */
@@ -368,6 +383,8 @@ int do_command(char **p, int *n)
 		ioctl(fd, TIOCMBIC, mdmsig);
 		strcpy(escapemsg, "\n\rt drop DTR\n\r");
 		i = 1;
+		*p++;
+		break;
 	case RAISEDTR:
 		/* raise DTR */
 		DTR = 1;
@@ -375,6 +392,8 @@ int do_command(char **p, int *n)
 		ioctl(fd, TIOCMBIS, mdmsig);
 		strcpy(escapemsg, "\n\rt drop DTR\n\r");
 		i = 1;
+		*p++;
+		break;
 	case DROPRTS:
 		if(!flowcontrol)
 		{
@@ -387,6 +406,7 @@ int do_command(char **p, int *n)
 				"\n\rt drop RTS/RTR\n\r");
 		}
 		i = 1;
+		*p++;
 		break;
 	case RAISERTS:
 		if(!flowcontrol)
@@ -400,6 +420,7 @@ int do_command(char **p, int *n)
 				"\n\rt drop RTS/RTR\n\r");
 		}
 		i = 1;
+		*p++;
 		break;
 	case FLOWOFF:
 		/* disable hardware flow control */
@@ -409,6 +430,7 @@ int do_command(char **p, int *n)
 			"control\n\r");
 		flowcontrol = 0;
 		i = 1;
+		*p++;
 		break;
 	case FLOWON:
 		/* enable hardware flow control */
@@ -418,6 +440,7 @@ int do_command(char **p, int *n)
 			"control\n\r");
 		flowcontrol = 0;
 		i = 1;
+		*p++;
 		break;
 	case QUIT1:
 	case QUIT2:
@@ -429,6 +452,7 @@ int do_command(char **p, int *n)
 		strcpy(escapemsg, "\n\rGoodbye\n\r");
 		clean_exit(-1);
 		i = 1;
+		*p++;
 		break;
 	case QUERY:
 		fprintf(stdout, "\n\r"
@@ -450,6 +474,7 @@ int do_command(char **p, int *n)
 			"******************************\n\r"
 		);
 		i = 1;
+		*p++;
 		break;
 	default:
 		i = 0;
@@ -459,8 +484,8 @@ int do_command(char **p, int *n)
 }
 int main(int argc, char *argv[])
 {
-	int		i, n, m, baud;
-	char		*p, cmdchr = '\0', *cmdstart;
+	int		i, n, m = 0, baud;
+	char		*p, *cmdchr = NULL, *cmdstart;
 	fd_set		read_fds, write_fds, except_fds;
 	struct timeval	tv;
 
@@ -567,10 +592,7 @@ int main(int argc, char *argv[])
 		{
 			if((n = read(fd, buffer, sizeof(buffer))) > 0)
 			{
-				if(write(1, buffer, n) != n)
-				{
-					clean_exit(-1);
-				}
+				do_write(1, buffer, n);
 			} else {
 				clean_exit(-1);
 			}
@@ -592,7 +614,7 @@ int main(int argc, char *argv[])
 			/* scan buffer for command */
 			for(i = 0, p = NULL;i < n; i++)
 			{
-				if((buffer[i]&127) == cmd_strt)
+				if((buffer[i]&127) == cmd_start_chr)
 				{
 					p = buffer + i;
 					break;
@@ -606,95 +628,80 @@ int main(int argc, char *argv[])
 				}
 				continue;
 			}
-			cmdchr = *p;
+			cmdchr = p;
 			cmdstart = p++;
-			if((cmdstart - buffer) <= 0)
+			if((cmdstart - buffer) <= n)
 			{	/* end of buffer, we need more input */
 				/* write the buffer minus the command */
-				if(cmdstart > 0)
+				if(write(fd, buffer, buffer - p) !=
+					(buffer - p))
 				{
-					if(write(fd, buffer, n - 1) != (n - 1))
-					{
-						clean_exit(-1);
-					}
+					clean_exit(-1);
 				}
 				continue;
 			}
 			m = -1;
-			if((*p&127) != cmd_strt)
-			{
-				if(m)
-				{
-					i = (cmdstart - buffer) + m;
-					n -= i;	/* # bytes following cmd */
+			if((*p&127) == cmd_start_chr)
+			{	/* two cmd esc's sends one */
+				n -= (buffer - cmdstart);
+			} else {
+				i = n - (buffer - cmdstart);
+				m = do_command(&p, &i);
+				if(m == 0)
+				{ /* no command  write whole buffer */
+					if(write(fd, buffer, n) != n)
+					{
+						clean_exit(-1);
+					}
+					cmdchr = NULL;
+					cmdstart = NULL;
+					continue;
 				}
-				m = do_command(&p, &n);
-			} else {	/* two cmd esc's sends one */
-				i = cmdstart - buffer;
-				n -= i;	/* number of bytes following cmd esc */
-			}
-			if(m == 0 && n > 0)
-			{ /* no command  write whole buffer */
-				if(write(fd, buffer, n) != n)
-				{
-					clean_exit(-1);
-				}
-				cmdchr = '\0';
-				continue;
 			}
 			/* write the dataq up to the command esc */
-			if(write(fd, buffer, cmdstart - buffer) !=
-				(cmdstart - buffer))
+			if(write(fd, buffer, buffer - cmdchr) !=
+				(buffer - cmdchr))
 			{
 				clean_exit(-1);
 			}
-			if(n > 0)
+			if(i > 0)
 			{
 				if(write(fd, p, n) != n)
 				{
 					clean_exit(-1);
 				}
 			}
-			cmdchr = '\0';
+			cmdchr = NULL;
+			cmdstart = NULL;
 			continue;
 		} else {	/* currently processing a comand */
 				/* we have the command escape */
-			if((buffer[0]&127) == cmd_strt)
-			{
-				/* 
-				 * a second cmd esc, drop the first one
-				 * send the rest
-				 */
-				if(write(fd, buffer, n) != n)
-				{
-					clean_exit(-1);
-				}
-				cmdchr = '\0';
-				continue;
-			}
 			p = buffer;
-			m = do_command(&p, &n);
-			if(m = 0 && n < 0)
-			{	/*
-				 * no command, send the cmd escape and the
-				 * whole buffer.
-				 */
-				if((write(fd, &cmdchr, 1) != 1) || (write(fd,
-						p, n) != n))
+			if((m = do_command(&p, &n)) == 0)
+			{	/* no command, send cmd_start_chr */
+				if(write(fd, &cmd_start_chr, 1) != 1)
 				{
 					clean_exit(-1);
 				}
 			} else {
-				/*
-				 * we had a command, drop the command escape
-				 * skip the command char
-				 */
-				if(write(fd, buffer + m, n - m) != (n - m))
+				if((buffer[0]&127) == cmd_start_chr)
 				{
-					clean_exit(-1);
+					/* 
+					 * a second cmd esc, first one was in
+					 * previous buffer, so just send the
+					 * whole buffer that we currently.
+					 * have.
+					 */
+					p--;
+					n++;
 				}
 			}
-			cmdchr = '\0';
+			if(write(fd, p, n) != n)
+			{
+				clean_exit(-1);
+			}
+			cmdchr = NULL;
+			cmdstart = NULL;
 			continue;
 		}
 	}
